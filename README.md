@@ -22,16 +22,18 @@ claude plugin install claudo --marketplace continuationcs/claudo
 
 ## 用法
 
-都在对话里完成，没有单独的面板。下面这些在消息框里发送，会被拦下，不会发给模型，也不会进入对话记录：
+都在对话里完成，没有单独的面板。在消息框里发送：
 
-| 发送 | 作用 |
-| --- | --- |
-| `/claudo ~/Downloads/book.txt` | 打开这个 txt（UTF-8、GBK/GB18030 都能读） |
-| `/claudo` | 显示当前文件和阅读进度（关着时末尾有 `· off`） |
-| `/claudo off` / `/claudo on` | 停止 / 恢复在工具行下面显示 |
-| `x` | 老板键：立即隐藏所有内容，再发一次恢复 |
+| 发送 | 作用 | 回答 |
+| --- | --- | --- |
+| `/claudo ~/Downloads/book.txt` | 打开这个 txt（UTF-8、GBK/GB18030 都能读） | `Ready.` |
+| `/claudo` | 查看阅读进度 | `12.3%`（关着时末尾有 `· off`） |
+| `/claudo off` / `/claudo on` | 停止 / 恢复在工具行下面显示 | `Off.` / `On.` |
+| `x` | 老板键：立即隐藏所有内容，再发一次恢复 | 无 |
 
-`/claudo` 在 Claude 回复的过程中也能直接用，不用等这一轮结束。
+- `x` 会被拦下，不发给模型，也不进对话记录。
+- `/claudo` 在桌面端会留在对话记录里，模型也能看到这一行和它的回答，所以回答里从不出现文件名；mod 还会把记录里命令后面的参数去掉，只留 `/claudo`。
+- `/claudo` 在 Claude 回复的过程中也能直接用，不用等这一轮结束。
 
 之后每个 Bash 和 Read 工具行下面多一行淡色的 `⎿ N matches …`：
 

@@ -62,7 +62,7 @@ for (const [name, file] of [['utf-8', '~/u.txt'], ['gb18030', '~/g.txt']] as con
   test(`/claudo <file> reads a ${name} file; a row opens it on a click and turns its own pages`, async ($, on) => {
     world(on)
     const { opened, row } = await start($, file)
-    expect(opened.drop).toContain('ready')
+    expect(opened.drop).toBe('Ready.')
 
     const ui = await row('toolu_1')
     const closed = await text(ui)
@@ -122,7 +122,9 @@ test('"x" toggles boss mode and /claudo off and on stop and start; other prompts
   expect((await submit(slash('on'))).drop).toBeTruthy()
   expect(await text(ui)).toContain('matches in')
 
-  expect((await submit(slash(''))).drop).toContain('u.txt')
+  const status = (await submit(slash(''))).drop ?? ''
+  expect(status).toMatch(/^\d+\.\d%$/)
+  expect(status).not.toContain('u.txt')
   expect((await submit({ text: 'fix the claudo bug', wait: false, origin })).text).toBe('fix the claudo bug')
   expect((await submit({ text: 'claudo off', wait: false, origin })).text).toBe('claudo off')
   expect((await submit({ text: 'x marks the spot', wait: false, origin })).text).toBe('x marks the spot')
@@ -155,4 +157,22 @@ test('outside a repository and with no source files, the code still comes from s
   expect(shown).toContain('第一章')
   expect(shown).toContain('worker.ts')
   await ui.unmount()
+})
+
+test('a /claudo run acts on what was typed but hands the run on without it', async ($, on) => {
+  world(on)
+  const seen: string[] = []
+  on('command.run', (_, e) => {
+    seen.push(e.args)
+    return { text: '' }
+  })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const run = $.command.run as unknown as (input: unknown) => Promise<{ text?: string }>
+  const presentation = { isFullscreen: false, columns: 80 }
+  const out = await run({ command: 'claudo', args: '~/u.txt', origin, presentation })
+  expect(out.text).toBe('Ready.')
+  expect(out.text).not.toContain('u.txt')
+  expect(seen.every(a => a === '')).toBe(true)
+  const status = await run({ command: 'claudo', args: '', origin, presentation })
+  expect(status.text).toMatch(/^\d+\.\d%$/)
 })

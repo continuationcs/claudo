@@ -418,11 +418,22 @@ export const register: Register = on => {
     )
   })
 
-  // /claudo <file> | on | off | (nothing: where reading stands). Handled at
-  // prompt.submit and dropped there, so neither the line nor an answer is
-  // recorded or sent; command.run answers the same where a run gets that far
-  // (each action is safe to run twice).
-  on('command.run', { command: 'claudo' }, async ($, e) => ({ text: await runClaudo($, e.args) }))
+  // /claudo <file> | on | off | (nothing: how far reading has got). In the
+  // desktop app the command line and its answer are recorded in the
+  // conversation, so the answer never names the file: "Ready.", "On.", "Off.",
+  // "12.3%". (Each action is safe to run twice: prompt.submit handles it too.)
+  // The first hook hands the run on with its arguments blanked, so the
+  // recorded line reads just "/claudo"; the second acts on what was typed.
+  let typed: string | undefined
+  on('command.run', { command: 'claudo' }, async ($, e, next) => {
+    typed = e.args
+    try {
+      return await next({ ...e, args: '' })
+    } finally {
+      typed = undefined
+    }
+  })
+  on('command.run', { command: 'claudo' }, async ($, e) => ({ text: await runClaudo($, typed ?? e.args) }))
 
   // "x" alone toggles boss mode. Both are dropped before they are sent.
   on('prompt.submit', async ($, e, next) => {
@@ -442,13 +453,13 @@ async function runClaudo($: $, args: string): Promise<string> {
   }
   if (!arg) {
     const path = await read($, pathA)
-    if (!path) return 'Nothing attached.'
+    if (!path) return 'None.'
     const sents = books.get(path)
     const pct = sents ? ((await read($, posA)) * 100) / Math.max(1, sents.length) : 0
     const state = (await read($, inlineA)) ? '' : ' · off'
-    return `${path.split('/').pop()} · ${pct.toFixed(1)}%${state}`
+    return `${pct.toFixed(1)}%${state}`
   }
-  const path = await openBook($, arg)
+  await openBook($, arg)
   const error = await read($, errorA)
-  return error ? `Error: ${error}` : `${path.split('/').pop()} · ready`
+  return error ? 'Error.' : 'Ready.'
 }
