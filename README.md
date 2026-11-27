@@ -22,14 +22,16 @@ claude plugin install claudo --marketplace continuationcs/claudo
 
 ## 用法
 
-都在对话里完成，没有单独的面板。下面这些都是在消息框里发送的命令，会被拦下，不会发给模型，也不会进入对话记录：
+都在对话里完成，没有单独的面板。下面这些在消息框里发送，会被拦下，不会发给模型，也不会进入对话记录：
 
 | 发送 | 作用 |
 | --- | --- |
-| `claudo ~/Downloads/book.txt` | 打开这个 txt（UTF-8、GBK/GB18030 都能读） |
-| `claudo` | 显示当前文件和阅读进度 |
+| `/claudo ~/Downloads/book.txt` | 打开这个 txt（UTF-8、GBK/GB18030 都能读） |
+| `/claudo` | 显示当前文件和阅读进度（关着时末尾有 `· off`） |
+| `/claudo off` / `/claudo on` | 停止 / 恢复在工具行下面显示 |
 | `x` | 老板键：立即隐藏所有内容，再发一次恢复 |
-| `claudo off` / `claudo on` | 停止 / 恢复在工具行下面显示 |
+
+`/claudo` 在 Claude 回复的过程中也能直接用，不用等这一轮结束。
 
 之后每个 Bash 和 Read 工具行下面多一行淡色的 `⎿ N matches …`：
 

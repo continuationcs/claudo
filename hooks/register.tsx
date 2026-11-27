@@ -1,8 +1,8 @@
 // claudo: reads a local txt file and draws it inside the conversation, as
 // comments in real code from the session's project, under Bash and Read rows.
 // Nothing from the file reaches the model or the stored transcript: the file
-// is read with $.fs and only the drawing of those rows changes. Commands are
-// typed in the message box and dropped before they are sent.
+// is read with $.fs and only the drawing of those rows changes. /claudo and
+// the boss key "x" are dropped before they are sent.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
@@ -350,6 +350,7 @@ async function setInline($: $, on: boolean) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    await $.command.register({ name: 'claudo', description: 'Trace view', argumentHint: '[file | on | off]', immediate: true })
     repoFiles = undefined // the session may work in another project now
     const saved = (await $.store.get('path')) as string | undefined
     if (saved && !(await read($, pathA))) {
@@ -417,33 +418,37 @@ export const register: Register = on => {
     )
   })
 
-  // Commands typed in the message box, dropped before they are sent:
-  //   x               boss mode on / off
-  //   claudo <file>   read that txt file
-  //   claudo off|on   stop / start drawing under tool rows
+  // /claudo <file> | on | off | (nothing: where reading stands). Handled at
+  // prompt.submit and dropped there, so neither the line nor an answer is
+  // recorded or sent; command.run answers the same where a run gets that far
+  // (each action is safe to run twice).
+  on('command.run', { command: 'claudo' }, async ($, e) => ({ text: await runClaudo($, e.args) }))
+
+  // "x" alone toggles boss mode. Both are dropped before they are sent.
   on('prompt.submit', async ($, e, next) => {
-    if (e.command || e.isMeta) return next(e)
-    const text = e.text.trim()
-    if (text.toLowerCase() === 'x') {
-      await toggleBoss($)
-      return { drop: 'Nothing to send.' }
-    }
-    const m = /^claudo(?:\s+(.+))?$/i.exec(text)
-    if (!m) return next(e)
-    const arg = (m[1] ?? '').trim()
-    if (/^(off|on)$/i.test(arg)) {
-      await setInline($, arg.toLowerCase() === 'on')
-      return { drop: 'Nothing to send.' }
-    }
-    if (!arg) {
-      const path = await read($, pathA)
-      const sents = books.get(path)
-      const pct = sents ? ((await read($, posA)) * 100) / Math.max(1, sents.length) : 0
-      const state = (await read($, inlineA)) ? '' : ' · off'
-      return { drop: path ? `${path.split('/').pop()} · ${pct.toFixed(1)}%${state}` : 'Nothing to send.' }
-    }
-    const path = await openBook($, arg)
-    const error = await read($, errorA)
-    return { drop: error ? `Error: ${error}` : `${path.split('/').pop()} · ready` }
+    if (e.isMeta) return next(e)
+    if (e.command?.name === 'claudo') return { drop: await runClaudo($, e.command.args) }
+    if (e.command || e.text.trim().toLowerCase() !== 'x') return next(e)
+    await toggleBoss($)
+    return { drop: 'Nothing to send.' }
   }).catch(($, e, next) => next(e))
+}
+
+async function runClaudo($: $, args: string): Promise<string> {
+  const arg = args.trim()
+  if (/^(off|on)$/i.test(arg)) {
+    await setInline($, arg.toLowerCase() === 'on')
+    return arg.toLowerCase() === 'on' ? 'On.' : 'Off.'
+  }
+  if (!arg) {
+    const path = await read($, pathA)
+    if (!path) return 'Nothing attached.'
+    const sents = books.get(path)
+    const pct = sents ? ((await read($, posA)) * 100) / Math.max(1, sents.length) : 0
+    const state = (await read($, inlineA)) ? '' : ' · off'
+    return `${path.split('/').pop()} · ${pct.toFixed(1)}%${state}`
+  }
+  const path = await openBook($, arg)
+  const error = await read($, errorA)
+  return error ? `Error: ${error}` : `${path.split('/').pop()} · ready`
 }

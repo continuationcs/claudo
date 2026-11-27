@@ -26,6 +26,7 @@ function world(on: On) {
     return { value: { base64: UTF8 } }
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: { command: 'claudo' } }))
   on('tool.call', () => ({ result: {} }))
   on('prompt.submit', (_, e) => ({ text: e.text }))
   // the engine's own row, beneath the mod
@@ -37,11 +38,12 @@ function world(on: On) {
 
 type Submit = (input: unknown) => Promise<{ drop?: string; text?: string }>
 const origin = { kind: 'composer' }
+const slash = (args: string) => ({ text: `/claudo ${args}`.trim(), command: { name: 'claudo', args }, wait: false, origin })
 
 async function start($: Parameters<TestBody>[0], file = '~/u.txt') {
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const submit = $.prompt.submit as unknown as Submit
-  const opened = await submit({ text: `claudo ${file}`, wait: false, origin })
+  const opened = await submit(slash(file))
   const call = $.tool.call as unknown as (input: unknown) => Promise<unknown>
   const row = async (id: string, tool = 'Bash') => {
     await call({ tool, command: 'date', tool_use_id: id })
@@ -57,7 +59,7 @@ const text = async (ui: { drawn: () => Promise<unknown> }) => JSON.stringify(awa
 
 
 for (const [name, file] of [['utf-8', '~/u.txt'], ['gb18030', '~/g.txt']] as const) {
-  test(`"claudo <file>" reads a ${name} file; a row opens it on a click and turns its own pages`, async ($, on) => {
+  test(`/claudo <file> reads a ${name} file; a row opens it on a click and turns its own pages`, async ($, on) => {
     world(on)
     const { opened, row } = await start($, file)
     expect(opened.drop).toContain('ready')
@@ -101,7 +103,7 @@ test('only Bash and Read rows read; a new row goes on where reading left off', a
   for (const ui of [a, grep, b]) await ui.unmount()
 })
 
-test('"x" toggles boss mode and "claudo off" / "claudo on" stop and start; other prompts pass', async ($, on) => {
+test('"x" toggles boss mode and /claudo off and on stop and start; other prompts pass', async ($, on) => {
   world(on)
   const { submit, row } = await start($)
   const ui = await row('toolu_1')
@@ -114,14 +116,15 @@ test('"x" toggles boss mode and "claudo off" / "claudo on" stop and start; other
   expect((await submit({ text: ' X ', wait: false, origin })).drop).toBeTruthy()
   expect(await text(ui)).toContain('第一章')
 
-  expect((await submit({ text: 'claudo off', wait: false, origin })).drop).toBeTruthy()
+  expect((await submit(slash('off'))).drop).toBeTruthy()
   expect(await text(ui)).not.toContain('matches in')
-  expect((await submit({ text: 'claudo', wait: false, origin })).drop).toContain('off')
-  expect((await submit({ text: 'claudo on', wait: false, origin })).drop).toBeTruthy()
+  expect((await submit(slash(''))).drop).toContain('off')
+  expect((await submit(slash('on'))).drop).toBeTruthy()
   expect(await text(ui)).toContain('matches in')
 
-  expect((await submit({ text: 'claudo', wait: false, origin })).drop).toContain('u.txt')
+  expect((await submit(slash(''))).drop).toContain('u.txt')
   expect((await submit({ text: 'fix the claudo bug', wait: false, origin })).text).toBe('fix the claudo bug')
+  expect((await submit({ text: 'claudo off', wait: false, origin })).text).toBe('claudo off')
   expect((await submit({ text: 'x marks the spot', wait: false, origin })).text).toBe('x marks the spot')
   await ui.unmount()
 })
@@ -138,6 +141,7 @@ test('outside a repository and with no source files, the code still comes from s
   on('fs.stat', () => ({ value: { kind: 'file', size: SIZE['/h/u.txt'] ?? 0, mtimeMs: 0, isLink: false } }))
   on('fs.read', () => ({ value: { base64: UTF8 } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: { command: 'claudo' } }))
   on('tool.call', () => ({ result: {} }))
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('ui.render', ($, e) => {
