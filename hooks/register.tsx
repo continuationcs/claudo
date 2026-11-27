@@ -472,18 +472,30 @@ export const register: Register = on => {
     const error = await read($, errorA)
     const inline = await read($, inlineA)
 
+    // Everything is a mouse target: a line of text turns to the next page, the
+    // "Cogitated" part of the footer to the previous one, the token count toggles
+    // boss mode, the percentage turns forward too. In boss mode a line does nothing.
+    const fwd = () => void (boss ? undefined : turn($, PER_PAGE))
+    const line = (key: string, children: unknown) => (
+      <Button key={key} plain onPress={fwd}>
+        {children as string}
+      </Button>
+    )
     const footer = (pct: string, secs: number, tokens: string) => (
       <Box flexDirection="row" marginTop={1}>
-        <Text dimColor>
-          ✻ Cogitated for {secs}s · ↓ {tokens} tokens · {pct}{' '}
-        </Text>
-        <Button key="prev" plain hotkey="b" label="‹" onPress={() => void turn($, -PER_PAGE)} />
-        <Text dimColor> </Text>
-        <Button key="next" plain hotkey="n" label="›" onPress={() => void turn($, PER_PAGE)} />
-        <Text dimColor> </Text>
-        <Button key="boss" plain hotkey="x" label="·" onPress={() => void turn($, 'boss')} />
-        <Text dimColor> </Text>
-        <Button key="inline" plain hotkey="i" label={inline ? '⇡' : '⇣'} onPress={() => void turn($, 'inline')} />
+        <Button key="prev" plain onPress={() => void turn($, -PER_PAGE)}>
+          <Text dimColor>✻ Cogitated for {secs}s</Text>
+        </Button>
+        <Text dimColor> · </Text>
+        <Button key="boss" plain onPress={() => void turn($, 'boss')}>
+          <Text dimColor>↓ {tokens} tokens</Text>
+        </Button>
+        <Text dimColor> · </Text>
+        <Button key="next" plain onPress={() => void turn($, PER_PAGE)}>
+          <Text dimColor>{pct}</Text>
+        </Button>
+        <Text dimColor>  </Text>
+        <Button key="inline" plain label={inline ? '⇡' : '⇣'} onPress={() => void turn($, 'inline')} />
       </Box>
     )
 
@@ -522,49 +534,67 @@ export const register: Register = on => {
           if (b.kind === 'prose')
             return (
               <Box key={`p${k}`} flexDirection="column" marginTop={1}>
-                {b.lines.map((l, j) => (
-                  <Text>
-                    {j === 0 ? '⏺ ' : '  '}
-                    {l}
-                  </Text>
-                ))}
+                {b.lines.map((l, j) =>
+                  line(
+                    `p${k}-${j}`,
+                    <Text>
+                      {j === 0 ? '⏺ ' : '  '}
+                      {l}
+                    </Text>,
+                  ),
+                )}
               </Box>
             )
           if (b.kind === 'read')
             return (
               <Box key={`r${k}`} flexDirection="column" marginTop={1}>
-                <Text>
-                  <Text color="green">⏺ </Text>
-                  <Text bold>Read</Text>({b.path})
-                </Text>
+                {line(
+                  `r${k}`,
+                  <Text>
+                    <Text color="green">⏺ </Text>
+                    <Text bold>Read</Text>({b.path})
+                  </Text>,
+                )}
                 <Code source={b.source} path={b.path} startLine={b.start} wrap="truncate-end" />
               </Box>
             )
           if (b.kind === 'update')
             return (
               <Box key={`u${k}`} flexDirection="column" marginTop={1}>
-                <Text>
-                  <Text color="green">⏺ </Text>
-                  <Text bold>Update</Text>({b.path})
-                </Text>
-                <Text dimColor>
-                  {'  ⎿  '}Updated {b.path} with {b.adds} additions and 1 removal
-                </Text>
+                {line(
+                  `u${k}`,
+                  <Text>
+                    <Text color="green">⏺ </Text>
+                    <Text bold>Update</Text>({b.path})
+                  </Text>,
+                )}
+                {line(
+                  `u${k}-s`,
+                  <Text dimColor>
+                    {'  ⎿  '}Updated {b.path} with {b.adds} additions and 1 removal
+                  </Text>,
+                )}
                 <Code source={b.diff} path={b.path} format="diff" wrap="truncate-end" />
               </Box>
             )
           return (
             <Box key={`b${k}`} flexDirection="column" marginTop={1}>
-              <Text>
-                <Text color="green">⏺ </Text>
-                <Text bold>Bash</Text>({b.cmd})
-              </Text>
-              {b.lines.map((l, j) => (
-                <Text dimColor>
-                  {j === 0 ? '  ⎿  ' : '     '}
-                  {l}
-                </Text>
-              ))}
+              {line(
+                `b${k}`,
+                <Text>
+                  <Text color="green">⏺ </Text>
+                  <Text bold>Bash</Text>({b.cmd})
+                </Text>,
+              )}
+              {b.lines.map((l, j) =>
+                line(
+                  `b${k}-${j}`,
+                  <Text dimColor>
+                    {j === 0 ? '  ⎿  ' : '     '}
+                    {l}
+                  </Text>,
+                ),
+              )}
             </Box>
           )
         })}

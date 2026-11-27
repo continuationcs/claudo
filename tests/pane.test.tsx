@@ -162,3 +162,31 @@ test('outside a repository and with no source files, the code still comes from s
   expect(JSON.stringify(await ui.drawn())).toContain('Cogitated')
   await ui.unmount()
 })
+
+test('a click on any line of the page turns to the next page; not in boss mode', async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.input({ key: 'file', text: '~/u.txt' })
+  for (let i = 0; i < 20 && !JSON.stringify(await ui.drawn()).includes('第'); i++) {}
+  const lineKey = async () =>
+    (await ui.findAll({ type: 'Button' }))
+      .map(b => (b as { key?: string }).key ?? '')
+      .find(k => !['prev', 'boss', 'next', 'inline'].includes(k))
+  const first = await lineKey()
+  expect(first).toBeTruthy()
+  await ui.press({ key: first! })
+  const two = JSON.stringify(await ui.drawn())
+  expect(two).not.toContain('第一章 开端')
+  expect(two).toContain('第8句')
+
+  await ui.press({ key: 'boss' })
+  const bossKey = await lineKey()
+  if (bossKey) await ui.press({ key: bossKey })
+  await ui.press({ key: 'boss' })
+  expect(JSON.stringify(await ui.drawn())).toContain('第8句')
+
+  await ui.press({ key: 'prev' })
+  expect(JSON.stringify(await ui.drawn())).toContain('第一章 开端')
+  await ui.unmount()
+})
