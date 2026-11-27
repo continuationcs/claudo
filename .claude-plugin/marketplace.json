@@ -1,0 +1,5 @@
+{
+  "name": "claudo",
+  "owner": { "name": "continuationcs" },
+  "plugins": [{ "name": "claudo", "source": "./" }]
+}
