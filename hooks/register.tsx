@@ -110,13 +110,31 @@ async function expand($: $, p: string) {
   return p.startsWith('~') ? (await getHome($)) + p.slice(1) : p
 }
 
+// Reads a whole file's bytes. Older Claude Code refuses any read of a file
+// over 4 MiB, a range included, so a larger file is first split on disk into
+// parts under that, each read whole, and joined back here.
 async function readAll($: $, file: string): Promise<Uint8Array> {
   const { size } = await $.fs.stat(file)
+  if (size < CHUNK) return fromBase64((await $.fs.read(file, { as: 'bytes' })).base64)
+  const dir = `/tmp/.claudo-parts-${hash(file)}`
+  const split = await $.process.run(
+    ['/bin/sh', '-c', 'rm -rf "$1" && mkdir -p "$1" && split -b 3000000 "$2" "$1/p-" && ls "$1"', 'sh', dir, file],
+    { timeoutMs: 120_000 },
+  )
+  if (split.exitCode !== 0) throw new Error(split.stderr.trim() || 'split failed')
+  const parts = split.stdout.split('\n').filter(Boolean).sort()
   const buf = new Uint8Array(size)
-  for (let off = 0; off < size; off += CHUNK) {
-    const { base64 } = await $.fs.read(file, { as: 'bytes', offset: off, length: Math.min(CHUNK, size - off) })
-    buf.set(fromBase64(base64), off)
+  let off = 0
+  try {
+    for (const part of parts) {
+      const bytes = fromBase64((await $.fs.read(`${dir}/${part}`, { as: 'bytes' })).base64)
+      buf.set(bytes.subarray(0, Math.max(0, size - off)), off)
+      off += bytes.length
+    }
+  } finally {
+    await $.process.run(['rm', '-rf', dir]).catch(() => undefined)
   }
+  if (off !== size) throw new Error(`read ${off} of ${size} bytes`)
   return buf
 }
 
@@ -146,7 +164,13 @@ function ensureBook($: $, file: string) {
   if (books.has(file) || loading.has(file)) return
   const job = loadBook($, file)
     .then(() => update($, errorA, () => ''))
-    .catch(err => update($, errorA, () => String(err?.message ?? err)))
+    .catch(async err => {
+      const message = String(err?.message ?? err)
+      // the answer in the conversation says only "Error.": the detail goes to a
+      // local file, which names the path and never the book's text
+      await $.fs.write('/tmp/claudo-error.txt', `${new Date().toISOString()} ${file}\n${message}\n`).catch(() => {})
+      await update($, errorA, () => message)
+    })
     .finally(() => {
       loading.delete(file)
       void update($, loadedA, n => n + 1)
@@ -433,7 +457,7 @@ async function setInline($: $, on: boolean) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'claudo', description: 'claude', argumentHint: '[on | off | file]', immediate: true })
+    await $.command.register({ name: 'claudo', description: 'claudo', argumentHint: '[b | n | on | off | file]', immediate: true })
     repoFiles = undefined // the session may work in another project now
     const saved = (await $.store.get('path')) as string | undefined
     if (saved && !(await read($, pathA))) {
@@ -469,7 +493,10 @@ export const register: Register = on => {
     const sents = books.get(await read($, pathA))
     if (!at || !sents?.length || e.props.isRunning || !(await read($, inlineA)) || (await read($, bossA))) return next(e)
     const pos = await read($, posA)
-    const isOpen = (await read($, openA))[id] === true
+    // The terminal hands no clicks to a row: there the newest row is open by
+    // itself, and /claudo n and /claudo b turn its pages.
+    const marks = await read($, marksA)
+    const isOpen = e.surface === 'terminal' ? Object.keys(marks).pop() === id : (await read($, openA))[id] === true
     const r0 = rng(parseInt(hash(id), 16))
     const n = int(r0, 2, 9)
     // the gutter, its gap and the row's indent take about 10 columns
@@ -503,7 +530,7 @@ export const register: Register = on => {
     )
   })
 
-  // /claudo <file> | on | off | (nothing: how far reading has got). In the
+  // /claudo <file> | n | b | on | off | (nothing: how far reading has got). In the
   // desktop app the command line and its answer are recorded in the
   // conversation, so the answer never names the file: "Ready.", "On.", "Off.",
   // "12.3%". (Each action is safe to run twice: prompt.submit handles it too.)
@@ -532,6 +559,10 @@ export const register: Register = on => {
 
 async function runClaudo($: $, args: string): Promise<string> {
   const arg = args.trim()
+  if (/^(n|next|b|back)$/i.test(arg)) {
+    await turn($, /^n/i.test(arg) ? 1 : -1)
+    return progress($)
+  }
   if (/^(off|on)$/i.test(arg)) {
     await setInline($, arg.toLowerCase() === 'on')
     return arg.toLowerCase() === 'on' ? 'On.' : 'Off.'
@@ -539,12 +570,16 @@ async function runClaudo($: $, args: string): Promise<string> {
   if (!arg) {
     const path = await read($, pathA)
     if (!path) return 'None.'
-    const sents = books.get(path)
-    const pct = sents ? ((await read($, posA)) * 100) / Math.max(1, sents.length) : 0
-    const state = (await read($, inlineA)) ? '' : ' · off'
-    return `${pct.toFixed(1)}%${state}`
+    return progress($)
   }
   await openBook($, arg)
   const error = await read($, errorA)
   return error ? 'Error.' : 'Ready.'
+}
+
+async function progress($: $): Promise<string> {
+  const sents = books.get(await read($, pathA))
+  const pct = sents ? ((await read($, posA)) * 100) / Math.max(1, sents.length) : 0
+  const state = (await read($, inlineA)) ? '' : ' · off'
+  return `${pct.toFixed(1)}%${state}`
 }

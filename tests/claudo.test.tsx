@@ -302,3 +302,86 @@ test('long sentences: every page is the same height, ends on code, and keeps a s
   expect(heights.size).toBe(1)
   await ui.unmount()
 })
+
+test('in the terminal the newest row is open by itself, and /claudo n and b turn its pages', async ($, on) => {
+  world(on)
+  const { submit } = await start($)
+  const call = $.tool.call as unknown as (input: unknown) => Promise<unknown>
+  const mount = (id: string) =>
+    $.ui.mount({
+      plugin: 'claudo', component: 'ToolUse', requestId: id, surface: 'terminal',
+      props: { tool_use_id: id, tool: 'Bash', input: {}, output: 'x', isRunning: false, isErrored: false, isInterrupted: false },
+    } as never)
+  await call({ tool: 'Bash', command: 'date', tool_use_id: 'toolu_old' })
+  await call({ tool: 'Bash', command: 'date', tool_use_id: 'toolu_new' })
+  const old = await mount('toolu_old')
+  const neu = await mount('toolu_new')
+  expect(await text(old)).not.toContain('第一章')
+  expect(await text(neu)).toContain('第一章')
+
+  const n = await submit(slash('n'))
+  expect(n.drop).toMatch(/^\d+\.\d%$/)
+  expect(await text(neu)).toContain('第10句')
+  await submit(slash('b'))
+  expect(await text(neu)).toContain('第一章')
+  for (const ui of [old, neu]) await ui.unmount()
+})
+
+test('a book over 4 MiB is read in parts, as older versions need', async ($, on) => {
+  const book = '第一章 开端\n\n' + '第1句，风从城门外卷进来。'.repeat(120000) + '\n'
+  const bytes = new TextEncoder().encode(book)
+  const cutAt = 3000000
+  const parts: Record<string, string> = {
+    '/tmp/p/p-aa': b64bytes(bytes.subarray(0, cutAt)),
+    '/tmp/p/p-ab': b64bytes(bytes.subarray(cutAt)),
+  }
+  mock.store(on)
+  const ok = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+  let splitDir = ''
+  const written: string[] = []
+  on('process.run', (_, e) => {
+    if (e.argv.join(' ').includes('HOME')) return ok('/h')
+    if (e.argv.join(' ').includes('split -b')) {
+      splitDir = e.argv[4]!
+      return ok('p-aa\np-ab\n')
+    }
+    if (e.argv.includes('rev-parse')) return ok('', 128)
+    if (e.argv[0] === '/bin/pwd') return ok('/e')
+    return ok('')
+  })
+  on('fs.stat', () => ({ value: { kind: 'file', size: bytes.length, mtimeMs: 0, isLink: false } }))
+  on('fs.read', (_, e) => {
+    if (e.path === '/h/big.txt') throw new Error('refused: the file is over the 4194304-byte limit')
+    const name = e.path.slice(splitDir.length + 1)
+    return { value: { base64: parts[`/tmp/p/${name}`]! } }
+  })
+  on('fs.write', (_, e) => {
+    written.push(String((e as { text?: unknown }).text))
+    return { value: undefined }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: { command: 'claudo' } }))
+  on('tool.call', () => ({ result: {} }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>ROW</Text>
+  })
+  const { opened, row } = await start($, '~/big.txt')
+  expect(written.join('')).toBe('')
+  expect(opened.drop).toBe('Ready.')
+  const ui = await row('toolu_big')
+  await ui.press({ key: 'open-toolu_big' })
+  expect(await text(ui)).toContain('第一章 开端')
+  await ui.unmount()
+})
+
+function b64bytes(bytes: Uint8Array) {
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  const out: string[] = []
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = (bytes[i]! << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0)
+    out.push(A[(n >> 18) & 63]! + A[(n >> 12) & 63]! + (i + 1 < bytes.length ? A[(n >> 6) & 63]! : '=') + (i + 2 < bytes.length ? A[n & 63]! : '='))
+  }
+  return out.join('')
+}

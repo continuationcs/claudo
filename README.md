@@ -29,6 +29,7 @@ claude plugin install claudo --marketplace continuationcs/claudo
 | `/claudo ~/Downloads/book.txt` | 打开这个 txt（UTF-8、GBK/GB18030 都能读） | `Ready.` |
 | `/claudo` | 查看阅读进度 | `12.3%`（关着时末尾有 `· off`） |
 | `/claudo off` / `/claudo on` | 停止 / 恢复在工具行下面显示 | `Off.` / `On.` |
+| `/claudo n` / `/claudo b` | 下一页 / 上一页（命令行里只能这样翻） | 进度，如 `12.6%` |
 | `x` | 老板键：立即隐藏所有内容，再发一次恢复 | 无 |
 
 - `x` 会被拦下，不发给模型，也不进对话记录。
@@ -41,6 +42,8 @@ claude plugin install claudo --marketplace continuationcs/claudo
 - 展开后点代码下面的 `… +N lines`：翻到下一页；点旁边的 `(ctrl+o to expand)`：翻回上一页。
 - 只有一个阅读位置：不管展开哪一行，显示的都是你读到的那一页。进度只在翻页时移动，并自动保存。
 - 代码块高度固定，每行都不会折行，翻页时按钮位置不动；一句话的几行注释总是连在一起。
+
+**命令行（终端里的 `claude`）**：终端不会把点击交给 mod，所以最新的那个工具行会自动展开，用 `/claudo n` / `/claudo b` 翻页。
 
 代码片段取自当前会话所在的 git 仓库；不在仓库里时取当前文件夹下的源码文件，都没有时用内置的一小段代码。
 
