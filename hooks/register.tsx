@@ -297,6 +297,7 @@ async function claim($: $, key: string, count: number) {
     })
     if (start >= sents.length) return
     await setMark($, path, key, [start, count])
+    await $.store.set(`pos:${hash(path)}`, Math.min(start + count, sents.length))
   } catch {
     // never let reading get in the way of a tool call
   }
@@ -438,7 +439,8 @@ export const register: Register = on => {
       const path = await read($, pathA)
       const sents = books.get(path)
       const pct = sents ? ((await read($, posA)) * 100) / Math.max(1, sents.length) : 0
-      return { drop: path ? `${path.split('/').pop()} · ${pct.toFixed(1)}%` : 'Nothing to send.' }
+      const state = (await read($, inlineA)) ? '' : ' · off'
+      return { drop: path ? `${path.split('/').pop()} · ${pct.toFixed(1)}%${state}` : 'Nothing to send.' }
     }
     const path = await openBook($, arg)
     const error = await read($, errorA)

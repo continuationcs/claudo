@@ -116,6 +116,7 @@ test('"x" toggles boss mode and "claudo off" / "claudo on" stop and start; other
 
   expect((await submit({ text: 'claudo off', wait: false, origin })).drop).toBeTruthy()
   expect(await text(ui)).not.toContain('matches in')
+  expect((await submit({ text: 'claudo', wait: false, origin })).drop).toContain('off')
   expect((await submit({ text: 'claudo on', wait: false, origin })).drop).toBeTruthy()
   expect(await text(ui)).toContain('matches in')
 
