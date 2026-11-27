@@ -59,7 +59,7 @@ const text = async (ui: { drawn: () => Promise<unknown> }) => JSON.stringify(awa
 
 
 for (const [name, file] of [['utf-8', '~/u.txt'], ['gb18030', '~/g.txt']] as const) {
-  test(`/claudo <file> reads a ${name} file; a row opens it on a click and turns its own pages`, async ($, on) => {
+  test(`/claudo <file> reads a ${name} file; a row opens it on a click and turns pages`, async ($, on) => {
     world(on)
     const { opened, row } = await start($, file)
     expect(opened.drop).toBe('Ready.')
@@ -76,7 +76,7 @@ for (const [name, file] of [['utf-8', '~/u.txt'], ['gb18030', '~/g.txt']] as con
     await ui.press({ key: 'more-toolu_1' })
     const next = await text(ui)
     expect(next).not.toContain('第一章 开端')
-    expect(next).toMatch(/第[23]句/)
+    expect(next).toContain('第10句')
 
     await ui.press({ key: 'back-toolu_1' })
     expect(await text(ui)).toContain('第一章 开端')
@@ -87,19 +87,25 @@ for (const [name, file] of [['utf-8', '~/u.txt'], ['gb18030', '~/g.txt']] as con
   })
 }
 
-test('only Bash and Read rows read; a new row goes on where reading left off', async ($, on) => {
+test('only Bash and Read rows get a line; one block is open at a time, at the one reading position', async ($, on) => {
   world(on)
   const { row } = await start($)
   const a = await row('toolu_a')
   await a.press({ key: 'open-toolu_a' })
-  for (let i = 0; i < 3; i++) await a.press({ key: 'more-toolu_a' })
+  await a.press({ key: 'more-toolu_a' })
+  await a.press({ key: 'more-toolu_a' })
+  expect(await text(a)).toContain('第20句')
   const grep = await row('toolu_g', 'Grep')
   expect(await text(grep)).not.toContain('matches in')
+
+  // opening another row closes the first, and shows the same page
   const b = await row('toolu_b', 'Read')
   await b.press({ key: 'open-toolu_b' })
-  const shown = await text(b)
-  expect(shown).toContain('lines')
-  expect(shown).not.toMatch(/第[1-9]句，/)
+  expect(await text(b)).toContain('第20句')
+  expect(await text(a)).not.toContain('第20句')
+  await b.press({ key: 'back-toolu_b' })
+  expect(await text(b)).toContain('第10句')
+  expect(await text(b)).not.toContain('第20句')
   for (const ui of [a, grep, b]) await ui.unmount()
 })
 
@@ -175,4 +181,124 @@ test('a /claudo run acts on what was typed but hands the run on without it', asy
   expect(seen.every(a => a === '')).toBe(true)
   const status = await run({ command: 'claudo', args: '', origin, presentation })
   expect(status.text).toMatch(/^\d+\.\d%$/)
+})
+
+test('an opened block keeps the same number of lines from page to page', async ($, on) => {
+  world(on)
+  const { row } = await start($)
+  const ui = await row('toolu_h')
+  await ui.press({ key: 'open-toolu_h' })
+  const sources = (node: unknown, acc: string[] = []): string[] => {
+    if (Array.isArray(node)) node.forEach(n => sources(n, acc))
+    else if (node && typeof node === 'object') {
+      const o = node as Record<string, unknown>
+      if (o.type === 'Code' && typeof (o.props as { source?: unknown })?.source === 'string') acc.push((o.props as { source: string }).source)
+      Object.values(o).forEach(v => sources(v, acc))
+    }
+    return acc
+  }
+  const heights: number[] = []
+  for (let i = 0; i < 4; i++) {
+    const src = sources(await ui.drawn())
+    expect(src.length).toBeGreaterThan(0)
+    heights.push(src[0]!.split('\n').length)
+    await ui.press({ key: 'more-toolu_h' })
+  }
+  expect(new Set(heights).size).toBe(1)
+  await ui.unmount()
+})
+
+test("no line of an opened block is wider than 64 columns, so none wraps", async ($, on) => {
+  world(on)
+  const { row } = await start($)
+  const ui = await row('toolu_w')
+  await ui.press({ key: 'open-toolu_w' })
+  const cols = (t: string) => [...t].reduce((n, ch) => n + (/[⺀-꓏가-힣＀-｠]/.test(ch) ? 2 : 1), 0)
+  for (let i = 0; i < 4; i++) {
+    const drawn = JSON.stringify(await ui.drawn())
+    const src = /"source":"((?:[^"\\]|\\.)*)"/.exec(drawn)?.[1] ?? ''
+    const lines = (JSON.parse(`"${src}"`) as string).split('\n')
+    expect(lines.length).toBeGreaterThan(1)
+    for (const l of lines) expect(cols(l)).toBeLessThanOrEqual(64)
+    await ui.press({ key: 'more-toolu_w' })
+  }
+  await ui.unmount()
+})
+
+test('the pieces of one long sentence sit on consecutive lines', async ($, on) => {
+  world(on)
+  const { row } = await start($)
+  const ui = await row('toolu_s')
+  await ui.press({ key: 'open-toolu_s' })
+  for (let i = 0; i < 4; i++) {
+    const drawn = JSON.stringify(await ui.drawn())
+    const src = /"source":"((?:[^"\\]|\\.)*)"/.exec(drawn)?.[1] ?? ''
+    const lines = (JSON.parse(`"${src}"`) as string).split('\n')
+    // a note line that does not end a sentence is followed by another note line
+    lines.forEach((l, k) => {
+      if (/\/\/ /.test(l) && !/[。！？”…]\s*$/.test(l) && k + 1 < lines.length && /\/\/ /.test(lines[k + 1]!) === false) {
+        expect(/第\d+句，/.test(l) || /开端$/.test(l)).toBe(true)
+      }
+    })
+    await ui.press({ key: 'more-toolu_s' })
+  }
+  await ui.unmount()
+})
+
+// base64 of UTF-8, for a book made in the test
+function b64(t: string) {
+  const bytes = new TextEncoder().encode(t)
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  let out = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = (bytes[i]! << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0)
+    out += A[(n >> 18) & 63]! + A[(n >> 12) & 63]! + (i + 1 < bytes.length ? A[(n >> 6) & 63]! : '=') + (i + 2 < bytes.length ? A[n & 63]! : '=')
+  }
+  return out
+}
+
+test('long sentences: every page is the same height, ends on code, and keeps a sentence whole', async ($, on) => {
+  // sentences of 57 to 90 characters: the reader cuts each at 56, and the
+  // page puts the pieces back together
+  const long = Array.from({ length: 40 }, (_, i) => `长句${i}开始` + '风从城门外卷进来吹得旗子猎猎作响'.repeat(3 + (i % 3)) + `长句${i}结束。`)
+  const book = '第一章 开端\n\n' + long.join('') + '\n'
+  const data = b64(book)
+  const size = new TextEncoder().encode(book).length
+  mock.store(on)
+  const ok = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+  on('process.run', (_, e) => (e.argv.join(' ').includes('HOME') ? ok('/h') : e.argv.includes('rev-parse') ? ok('', 128) : e.argv[0] === '/bin/pwd' ? ok('/e') : ok('')))
+  on('fs.stat', () => ({ value: { kind: 'file', size, mtimeMs: 0, isLink: false } }))
+  on('fs.read', () => ({ value: { base64: data } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: { command: 'claudo' } }))
+  on('tool.call', () => ({ result: {} }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>ROW</Text>
+  })
+  const { row } = await start($, '~/long.txt')
+  const ui = await row('toolu_l')
+  await ui.press({ key: 'open-toolu_l' })
+  const heights = new Set<number>()
+  for (let i = 0; i < 8; i++) {
+    const drawn = JSON.stringify(await ui.drawn())
+    const src = /"source":"((?:[^"\\]|\\.)*)"/.exec(drawn)?.[1] ?? ''
+    const lines = (JSON.parse(`"${src}"`) as string).split('\n')
+    heights.add(lines.length)
+    expect(lines[lines.length - 1]!.trim()).not.toBe('')
+    expect(lines[lines.length - 1]!).not.toContain('// ')
+    // a sentence's start and end sit in one run of note lines
+    const notes = lines.map(l => (/\/\/ /.test(l) ? l.split('// ')[1]! : null))
+    notes.forEach((n, k) => {
+      const m = n && /长句(\d+)开始/.exec(n)
+      if (!m) return
+      let j = k
+      while (j < notes.length && notes[j] !== null && !notes[j]!.includes(`长句${m[1]}结束`)) j++
+      expect(j < notes.length && notes[j] !== null).toBe(true)
+    })
+    await ui.press({ key: 'more-toolu_l' })
+  }
+  expect(heights.size).toBe(1)
+  await ui.unmount()
 })

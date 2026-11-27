@@ -8,7 +8,6 @@ import type { EngineInterface, Register } from 'claude-code'
 
 type $ = EngineInterface
 
-const ROW_PAGE = 4 // sentences a click on "+N lines" turns to
 const WRAP = 56
 const CHUNK = 4 * 1024 * 1024
 const SRC = /\.(ts|tsx|js|jsx|mjs|py|rs|go|java|kt|swift|rb|php|c|cc|cpp|h|hpp|cs|scala|vue|svelte|sh)$/
@@ -230,9 +229,15 @@ async function snippet($: $, r: () => number, n: number): Promise<Snip> {
     if (lines.length < n + 5) continue
     const start = int(r, 0, lines.length - n - 1)
     const chunk = lines.slice(start, start + n)
+    // the app drops a block's trailing blank line, which would change its height
+    if (!chunk[0]?.trim() || !chunk[n - 1]?.trim()) continue
     if (chunk.filter(l => l.trim()).length >= n * 0.7) return { path: f, start: start + 1, lines: chunk }
   }
-  const at = int(r, 0, Math.max(0, FALLBACK.lines.length - n))
+  const fits: number[] = []
+  for (let at = 0; at + n <= FALLBACK.lines.length; at++) {
+    if (FALLBACK.lines[at]!.trim() && FALLBACK.lines[at + n - 1]!.trim()) fits.push(at)
+  }
+  const at = fits.length ? pick(r, fits) : 0
   return { path: FALLBACK.path, start: FALLBACK.start + at, lines: FALLBACK.lines.slice(at, at + n) }
 }
 
@@ -243,19 +248,109 @@ const indent = (l: string) => l.slice(0, l.length - l.trimStart().length)
 
 type Shown = { path: string; start: number; source: string }
 
-// Real code with the sentences as comments between its lines.
-async function codeWith($: $, r: () => number, sents: string[]): Promise<Shown> {
-  const s = await snippet($, r, Math.max(int(r, 7, 11), sents.length + 4))
+// An opened block is always BLOCK_ROWS lines, none of them wrapping, so the
+// "… +N lines" line under it stays put from page to page.
+const BLOCK_ROWS = 14
+
+// Columns a string takes: CJK and full-width characters count two.
+const cols = (t: string) => {
+  let n = 0
+  for (const ch of t) n += /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/.test(ch) ? 2 : 1
+  return n
+}
+
+// Cuts a string into pieces no wider than `width` columns.
+function cut(t: string, width: number): string[] {
+  const out: string[] = []
+  let cur = ''
+  for (const ch of t) {
+    if (cur && cols(cur + ch) > width) {
+      out.push(cur)
+      cur = ''
+    }
+    cur += ch
+  }
+  if (cur) out.push(cur)
+  return out
+}
+
+// Cuts a line of code to `width` columns.
+const clip = (t: string, width: number) => (cols(t) <= width ? t : cut(t, width)[0] ?? '')
+
+// A page of the book: whole sentences, a sentence the reader cut in two
+// (one over WRAP characters) put back together, filling at most NOTE_ROWS
+// note lines of NOTE_COLS columns.
+const NOTE_ROWS = 10
+const NOTE_COLS = 50
+// Only a piece the reader cut at exactly WRAP characters goes on into the
+// next one; anything shorter (a title, a paragraph's end) stands alone.
+const ends = (t: string) => t.length < WRAP || /[。！？!?…”’」』"]$/.test(t)
+
+// The sentences [k, j) that make one whole sentence ending at j - 1.
+function groupBefore(sents: string[], j: number) {
+  let k = j - 1
+  while (k > 0 && !ends(sents[k - 1]!) && j - k < 4) k--
+  return k
+}
+
+function pageAt(sents: string[], pos: number) {
+  const notes: string[] = []
+  let rows = 0
+  let j = pos
+  while (j < sents.length) {
+    let k = j + 1
+    while (k < sents.length && !ends(sents[k - 1]!) && k - j < 4) k++
+    const text = sents.slice(j, k).join('')
+    const need = cut(text, NOTE_COLS).length
+    if (notes.length && rows + need > NOTE_ROWS) break
+    notes.push(text)
+    rows += need
+    j = k
+  }
+  return { notes, end: j }
+}
+
+// Where the page before the one at `pos` starts.
+function pageBefore(sents: string[], pos: number) {
+  let rows = 0
+  let j = pos
+  while (j > 0) {
+    const k = groupBefore(sents, j)
+    rows += cut(sents.slice(k, j).join(''), NOTE_COLS).length
+    if (j < pos && rows > NOTE_ROWS) break
+    j = k
+  }
+  return j
+}
+
+// Real code with the notes as comments between its lines: exactly
+// BLOCK_ROWS lines, each well inside the code block's room. The width the
+// surface reports runs wider than that room (a grouped row's block is
+// narrower still), so stay at most 64 columns of code and 50 of a note.
+async function codeWith($: $, r: () => number, notes: string[], width: number): Promise<Shown> {
+  const room = Math.min(64, Math.max(24, width - 20))
+  // each note becomes one or more lines, kept together
+  const groups = notes.map(t => cut(t, Math.min(NOTE_COLS, room - 12)))
+  const noteRows = groups.reduce((n, g) => n + g.length, 0)
+  const codeRows = Math.max(2, BLOCK_ROWS - noteRows)
+  const s = await snippet($, r, codeRows)
+  const lines = s.lines.slice(0, codeRows)
   const slots = new Set<number>()
-  while (slots.size < Math.min(sents.length, s.lines.length - 1)) slots.add(int(r, 1, s.lines.length - 1))
+  while (slots.size < Math.min(groups.length, lines.length - 1)) slots.add(int(r, 1, lines.length - 1))
   const order = [...slots].sort((a, b) => a - b)
   const out: string[] = []
-  let si = 0
-  s.lines.forEach((code, i) => {
-    if (order[si] === i) out.push(`${indent(code)}${mark(s.path)} ${sents[si++]}`)
-    out.push(code)
+  let gi = 0
+  const put = (lead: string) => {
+    for (const piece of groups[gi++] ?? []) out.push(`${lead}${mark(s.path)} ${piece}`)
+  }
+  lines.forEach((code, i) => {
+    if (order.includes(i)) put(clip(indent(code), 8))
+    out.push(clip(code, room))
   })
-  while (si < sents.length) out.push(`${mark(s.path)} ${sents[si++]}`)
+  // what slots could not take goes before the last line, never after it
+  const last = out.pop() ?? ''
+  while (gi < groups.length) put(clip(indent(last), 8))
+  out.push(last)
   return { path: s.path, start: s.start, source: out.join('\n') }
 }
 
@@ -281,23 +376,16 @@ async function openBook($: $, raw: string) {
   return path
 }
 
-// A Bash or Read call claims the next sentence or two when it is made.
-async function claim($: $, key: string, count: number) {
+// A Bash or Read call made while reading is on gets a line under its row.
+// There is one reading position: whichever row is opened shows the page there.
+async function claim($: $, key: string) {
   try {
     if (!(await read($, inlineA)) || (await read($, bossA))) return
     const path = await read($, pathA)
     if (!path) return
-    const sents = books.get(path)
-    if (!sents) return ensureBook($, path)
+    if (!books.get(path)) ensureBook($, path)
     if ((await read($, marksA))[key]) return
-    let start = 0
-    await update($, posA, p => {
-      start = Math.min(p, sents.length)
-      return Math.min(p + count, sents.length)
-    })
-    if (start >= sents.length) return
-    await setMark($, path, key, [start, count])
-    await $.store.set(`pos:${hash(path)}`, Math.min(start + count, sents.length))
+    await setMark($, path, key, [await read($, posA), 0])
   } catch {
     // never let reading get in the way of a tool call
   }
@@ -314,27 +402,22 @@ async function setMark($: $, path: string, key: string, range: [number, number])
   await saveMarks($, path, kept)
 }
 
-// A row turns its own page: forward to the sentences after the ones it shows
-// (and reading progress follows), or back to the ones before.
-async function turnRow($: $, key: string, dir: 1 | -1) {
+// Forward to the page after the one shown, or back to the one before.
+async function turn($: $, dir: 1 | -1) {
   const path = await read($, pathA)
   const sents = books.get(path)
-  const at = (await read($, marksA))[key]
-  if (!path || !sents || !at) return
-  const [start, count] = at
-  if (dir === 1) {
-    const from = start + count
-    if (from >= sents.length) return
-    const n = Math.min(ROW_PAGE, sents.length - from)
-    await setMark($, path, key, [from, n])
-    let pos = 0
-    await update($, posA, p => (pos = Math.max(p, from + n)))
-    await $.store.set(`pos:${hash(path)}`, pos)
-  } else {
-    if (start <= 0) return
-    const from = Math.max(0, start - ROW_PAGE)
-    await setMark($, path, key, [from, start - from])
-  }
+  if (!path || !sents) return
+  let pos = 0
+  await update($, posA, p => {
+    pos = dir === 1 ? Math.min(pageAt(sents, p).end, Math.max(0, sents.length - 1)) : pageBefore(sents, p)
+    return pos
+  })
+  await $.store.set(`pos:${hash(path)}`, pos)
+}
+
+// Opening a row closes any other: one block open at a time.
+async function toggleOpen($: $, key: string) {
+  await update($, openA, m => (m[key] ? {} : { [key]: true }))
 }
 
 async function toggleBoss($: $) {
@@ -350,7 +433,7 @@ async function setInline($: $, on: boolean) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'claudo', description: 'Trace view', argumentHint: '[file | on | off]', immediate: true })
+    await $.command.register({ name: 'claudo', description: 'claude', argumentHint: '[on | off | file]', immediate: true })
     repoFiles = undefined // the session may work in another project now
     const saved = (await $.store.get('path')) as string | undefined
     if (saved && !(await read($, pathA))) {
@@ -371,32 +454,34 @@ export const register: Register = on => {
 
   on('tool.call', async ($, e, next) => {
     if (e.tool === 'Bash' || e.tool === 'Read') {
-      await claim($, e.tool_use_id, 1 + (hash(e.tool_use_id).charCodeAt(0) % 2))
+      await claim($, e.tool_use_id)
     }
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  // Under a Bash or Read row: one quiet line that opens the code; under the
-  // code, "… +N lines" turns forward and "(ctrl+o to expand)" turns back.
+  // Under a Bash or Read row: one quiet line that opens the code (closing any
+  // other row's); under the code, "… +N lines" turns forward and
+  // "(ctrl+o to expand)" turns back. The size and place of both stay put.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     const id = e.props.tool_use_id
     await read($, loadedA) // draw again once the book is read
     const at = (await read($, marksA))[id]
     const sents = books.get(await read($, pathA))
-    if (!at || !sents || e.props.isRunning || !(await read($, inlineA)) || (await read($, bossA))) return next(e)
-    const part = sents.slice(at[0], at[0] + at[1])
-    if (!part.length) return next(e)
+    if (!at || !sents?.length || e.props.isRunning || !(await read($, inlineA)) || (await read($, bossA))) return next(e)
+    const pos = await read($, posA)
     const isOpen = (await read($, openA))[id] === true
     const r0 = rng(parseInt(hash(id), 16))
     const n = int(r0, 2, 9)
-    const shown = await codeWith($, rng(parseInt(hash(`${id}:${at[0]}`), 16)), part)
+    // the gutter, its gap and the row's indent take about 10 columns
+    const width = (e.viewport?.columns ?? 100) - 10
+    const shown = await codeWith($, rng(parseInt(hash(`${id}:${pos}`), 16)), pageAt(sents, pos).notes, width)
     const summary = e.props.tool === 'Read' ? `${n + 31} lines` : `${n} matches in ${shown.path.split('/').pop()}`
     const more = int(r0, 12, 60)
     const { Box, Text, Button, Code } = $.ui.resolve(e)
     return (
       <Box flexDirection="column">
         {await next(e)}
-        <Button key={`open-${id}`} plain onPress={() => void update($, openA, m => ({ ...m, [id]: !m[id] }))}>
+        <Button key={`open-${id}`} plain onPress={() => void toggleOpen($, id)}>
           <Text dimColor>
             {'  ⎿  '}
             {summary}
@@ -406,10 +491,10 @@ export const register: Register = on => {
         {isOpen && <Code source={shown.source} path={shown.path} startLine={shown.start} wrap="truncate-end" />}
         {isOpen && (
           <Box flexDirection="row">
-            <Button key={`more-${id}`} plain onPress={() => void turnRow($, id, 1)}>
+            <Button key={`more-${id}`} plain onPress={() => void turn($, 1)}>
               <Text dimColor>{`     … +${more} lines `}</Text>
             </Button>
-            <Button key={`back-${id}`} plain onPress={() => void turnRow($, id, -1)}>
+            <Button key={`back-${id}`} plain onPress={() => void turn($, -1)}>
               <Text dimColor>(ctrl+o to expand)</Text>
             </Button>
           </Box>
