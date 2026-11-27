@@ -1,15 +1,14 @@
-// claudo: a pane titled "Trace" that reads a local txt file and draws it as
-// session output (replies, Read / Update / Bash rows) mixed with real code
-// from a local repository. Nothing from the file reaches the model: the file
-// is read with $.fs and drawn in the pane only.
+// claudo: reads a local txt file and draws it inside the conversation, as
+// comments in real code from the session's project, under Bash and Read rows.
+// Nothing from the file reaches the model or the stored transcript: the file
+// is read with $.fs and only the drawing of those rows changes. Commands are
+// typed in the message box and dropped before they are sent.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 type $ = EngineInterface
 
-const PANE = 'claudo'
-const TITLE = 'Trace'
-const PER_PAGE = 8 // sentences per page, always exactly this many but at the end
+const ROW_PAGE = 4 // sentences a click on "+N lines" turns to
 const WRAP = 56
 const CHUNK = 4 * 1024 * 1024
 const SRC = /\.(ts|tsx|js|jsx|mjs|py|rs|go|java|kt|swift|rb|php|c|cc|cpp|h|hpp|cs|scala|vue|svelte|sh)$/
@@ -94,7 +93,7 @@ function toSentences(text: string): string[] {
 }
 
 // ------------------------------------------------------------------ loading
-// Module variables: a reload drops them and the pane loads again.
+// Module variables: a reload drops them and the book is read again.
 
 let home = ''
 const books = new Map<string, string[]>()
@@ -240,18 +239,13 @@ async function snippet($: $, r: () => number, n: number): Promise<Snip> {
 const mark = (p: string) => (/\.(py|rb|sh)$/.test(p) ? '#' : '//')
 const indent = (l: string) => l.slice(0, l.length - l.trimStart().length)
 
-// ------------------------------------------------------------------ a page
+// ------------------------------------------------------------------ a row's code
 
-type Block =
-  | { kind: 'prose'; lines: string[] }
-  | { kind: 'read'; path: string; start: number; source: string }
-  | { kind: 'update'; path: string; diff: string; adds: number }
-  | { kind: 'bash'; cmd: string; lines: string[] }
+type Shown = { path: string; start: number; source: string }
 
-const CMDS = ['pnpm vitest run --reporter=dot', 'pnpm tsc --noEmit', 'git diff --stat', 'pnpm lint', 'rg -n "sessionId" src']
-
-async function readBlock($: $, r: () => number, sents: string[]): Promise<Block> {
-  const s = await snippet($, r, int(r, 7, 11))
+// Real code with the sentences as comments between its lines.
+async function codeWith($: $, r: () => number, sents: string[]): Promise<Shown> {
+  const s = await snippet($, r, Math.max(int(r, 7, 11), sents.length + 4))
   const slots = new Set<number>()
   while (slots.size < Math.min(sents.length, s.lines.length - 1)) slots.add(int(r, 1, s.lines.length - 1))
   const order = [...slots].sort((a, b) => a - b)
@@ -261,149 +255,110 @@ async function readBlock($: $, r: () => number, sents: string[]): Promise<Block>
     if (order[si] === i) out.push(`${indent(code)}${mark(s.path)} ${sents[si++]}`)
     out.push(code)
   })
-  return { kind: 'read', path: s.path, start: s.start, source: out.join('\n') }
-}
-
-async function updateBlock($: $, r: () => number, sents: string[]): Promise<Block> {
-  const s = await snippet($, r, int(r, 6, 9))
-  const cut = int(r, 2, s.lines.length - 2)
-  const body: string[] = []
-  s.lines.forEach((code, i) => {
-    if (i === cut) {
-      body.push('-' + code)
-      for (const t of sents) body.push(`+${indent(code)}${mark(s.path)} ${t}`)
-      body.push('+' + code)
-    } else body.push(' ' + code)
-  })
-  const oldN = s.lines.length
-  const newN = oldN + sents.length
-  const diff = `@@ -${s.start},${oldN} +${s.start},${newN} @@\n${body.join('\n')}`
-  return { kind: 'update', path: s.path, diff, adds: sents.length + 1 }
-}
-
-async function buildPage($: $, sents: string[], pos: number) {
-  const r = rng(pos * 2654435761 + 7)
-  const blocks: Block[] = []
-  let i = pos
-  let budget = PER_PAGE
-  while (budget > 0 && i < sents.length) {
-    const roll = r()
-    const kind = roll < 0.4 ? 'prose' : roll < 0.7 ? 'read' : roll < 0.9 ? 'update' : 'bash'
-    let take = kind === 'prose' ? int(r, 2, 3) : kind === 'read' ? int(r, 1, 3) : int(r, 1, 2)
-    take = Math.min(take, budget, sents.length - i)
-    const part = sents.slice(i, i + take)
-    if (kind === 'prose') blocks.push({ kind, lines: part })
-    else if (kind === 'read') blocks.push(await readBlock($, r, part))
-    else if (kind === 'update') blocks.push(await updateBlock($, r, part))
-    else blocks.push({ kind, cmd: pick(r, CMDS), lines: part })
-    i += take
-    budget -= take
-  }
-  return { blocks, end: i, secs: int(r, 8, 95), tokens: `${int(r, 1, 9)}.${int(r, 0, 9)}k` }
-}
-
-async function bossPage($: $, seed: number): Promise<Block[]> {
-  const r = rng(seed)
-  const s = await snippet($, r, 12)
-  const dir = s.path.split('/').slice(0, -1).join('/') || 'src'
-  return [
-    { kind: 'read', path: s.path, start: s.start, source: s.lines.join('\n') },
-    { kind: 'bash', cmd: 'pnpm vitest run --reporter=dot', lines: ['·'.repeat(int(r, 40, 60)), `Test Files  ${int(r, 30, 60)} passed`, `     Tests  ${int(r, 300, 600)} passed`] },
-    { kind: 'prose', lines: [`测试全部通过。接下来我看一下 ${dir} 里的调用方，确认没有其它地方依赖旧的行为。`] },
-  ]
+  while (si < sents.length) out.push(`${mark(s.path)} ${sents[si++]}`)
+  return { path: s.path, start: s.start, source: out.join('\n') }
 }
 
 // ------------------------------------------------------------------ progress
 
-async function remember($: $, path: string, pos: number) {
-  await $.store.set(`pos:${hash(path)}`, pos)
+type Marks = Record<string, [number, number]>
+
+async function saveMarks($: $, path: string, marks: Marks) {
+  await $.store.set(`marks:${hash(path)}`, marks)
 }
 
 async function openBook($: $, raw: string) {
   const path = await expand($, raw)
   await $.store.set('path', path)
   const saved = Number((await $.store.get(`pos:${hash(path)}`)) ?? 0)
-  const marks = ((await $.store.get(`marks:${hash(path)}`)) ?? {}) as Record<string, [number, number]>
+  const marks = ((await $.store.get(`marks:${hash(path)}`)) ?? {}) as Marks
   await update($, posA, () => saved)
   await update($, marksA, () => marks)
   await update($, pathA, () => path)
   await update($, errorA, () => '')
   ensureBook($, path)
+  await loading.get(path)
+  return path
 }
 
-// Inline mode: a Bash or Read call claims the next few sentences when it is
-// made. Under its row the pane draws one quiet summary line; a click on it
-// opens real code with the sentences as comments. Only the drawing changes:
-// the result as stored, and what the model reads, are untouched.
-
+// A Bash or Read call claims the next sentence or two when it is made.
 async function claim($: $, key: string, count: number) {
   try {
-    await claimNow($, key, count)
+    if (!(await read($, inlineA)) || (await read($, bossA))) return
+    const path = await read($, pathA)
+    if (!path) return
+    const sents = books.get(path)
+    if (!sents) return ensureBook($, path)
+    if ((await read($, marksA))[key]) return
+    let start = 0
+    await update($, posA, p => {
+      start = Math.min(p, sents.length)
+      return Math.min(p + count, sents.length)
+    })
+    if (start >= sents.length) return
+    await setMark($, path, key, [start, count])
   } catch {
-    // never let reading get in the way of a tool call or a reply
+    // never let reading get in the way of a tool call
   }
 }
 
-async function claimNow($: $, key: string, count: number) {
-  if (!(await read($, inlineA)) || (await read($, bossA))) return
-  const path = await read($, pathA)
-  const sents = books.get(path)
-  if (!path) return
-  if (!sents) return ensureBook($, path)
-  if ((await read($, marksA))[key]) return
-  let start = 0
-  await update($, posA, p => {
-    start = Math.min(p, sents.length)
-    return Math.min(p + count, sents.length)
-  })
-  if (start >= sents.length) return
-  let kept: Record<string, [number, number]> = {}
+async function setMark($: $, path: string, key: string, range: [number, number]) {
+  let kept: Marks = {}
   await update($, marksA, m => {
-    const entries = Object.entries({ ...m, [key]: [start, count] as [number, number] })
-    kept = Object.fromEntries(entries.slice(-MAX_MARKS))
+    const rest = { ...m }
+    delete rest[key]
+    kept = Object.fromEntries(Object.entries({ ...rest, [key]: range }).slice(-MAX_MARKS))
     return kept
   })
-  await remember($, path, start + count)
-  await $.store.set(`marks:${hash(path)}`, kept)
+  await saveMarks($, path, kept)
 }
 
-async function turn($: $, delta: number | 'boss' | 'close' | 'inline') {
-  if (delta === 'boss') return update($, bossA, b => !b)
-  if (delta === 'inline') {
-    let on = false
-    await update($, inlineA, b => (on = !b))
-    return $.store.set('inline', on)
-  }
+// A row turns its own page: forward to the sentences after the ones it shows
+// (and reading progress follows), or back to the ones before.
+async function turnRow($: $, key: string, dir: 1 | -1) {
   const path = await read($, pathA)
-  if (delta === 'close') {
-    await $.store.delete('path')
-    return update($, pathA, () => '')
+  const sents = books.get(path)
+  const at = (await read($, marksA))[key]
+  if (!path || !sents || !at) return
+  const [start, count] = at
+  if (dir === 1) {
+    const from = start + count
+    if (from >= sents.length) return
+    const n = Math.min(ROW_PAGE, sents.length - from)
+    await setMark($, path, key, [from, n])
+    let pos = 0
+    await update($, posA, p => (pos = Math.max(p, from + n)))
+    await $.store.set(`pos:${hash(path)}`, pos)
+  } else {
+    if (start <= 0) return
+    const from = Math.max(0, start - ROW_PAGE)
+    await setMark($, path, key, [from, start - from])
   }
-  const total = books.get(path)?.length ?? 0
-  let next = 0
-  await update($, posA, p => {
-    next = Math.max(0, Math.min(p + delta, Math.max(0, total - 1)))
-    return next
-  })
-  await update($, bossA, () => false)
-  await remember($, path, next)
+}
+
+async function toggleBoss($: $) {
+  await update($, bossA, b => !b)
+}
+
+async function setInline($: $, on: boolean) {
+  await update($, inlineA, () => on)
+  await $.store.set('inline', on)
 }
 
 // ------------------------------------------------------------------ hooks
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'claudo', description: 'Open the trace pane' })
     repoFiles = undefined // the session may work in another project now
     const saved = (await $.store.get('path')) as string | undefined
     if (saved && !(await read($, pathA))) {
       const pos = Number((await $.store.get(`pos:${hash(saved)}`)) ?? 0)
-      const marks = ((await $.store.get(`marks:${hash(saved)}`)) ?? {}) as Record<string, [number, number]>
+      const marks = ((await $.store.get(`marks:${hash(saved)}`)) ?? {}) as Marks
       await update($, posA, () => pos)
       await update($, marksA, () => marks)
       await update($, pathA, () => saved)
     }
-    // a reload empties the module's cache: read the book again, pane open or not
+    // a reload empties the module's cache: read the book again
     const path = await read($, pathA)
     if (path) ensureBook($, path)
     // inline is on unless it was turned off
@@ -412,7 +367,6 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // a Bash or Read call claims a sentence or two before it runs
   on('tool.call', async ($, e, next) => {
     if (e.tool === 'Bash' || e.tool === 'Read') {
       await claim($, e.tool_use_id, 1 + (hash(e.tool_use_id).charCodeAt(0) % 2))
@@ -420,186 +374,74 @@ export const register: Register = on => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
+  // Under a Bash or Read row: one quiet line that opens the code; under the
+  // code, "… +N lines" turns forward and "(ctrl+o to expand)" turns back.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     const id = e.props.tool_use_id
-    const claimed = (await read($, marksA))[id]
+    await read($, loadedA) // draw again once the book is read
+    const at = (await read($, marksA))[id]
     const sents = books.get(await read($, pathA))
-    if (!claimed || !sents || e.props.isRunning || !(await read($, inlineA)) || (await read($, bossA))) return next(e)
-    const part = sents.slice(claimed[0], claimed[0] + claimed[1])
+    if (!at || !sents || e.props.isRunning || !(await read($, inlineA)) || (await read($, bossA))) return next(e)
+    const part = sents.slice(at[0], at[0] + at[1])
     if (!part.length) return next(e)
     const isOpen = (await read($, openA))[id] === true
-    const r = rng(parseInt(hash(id), 16))
-    const block = await readBlock($, r, part)
-    if (block.kind !== 'read') return next(e)
+    const r0 = rng(parseInt(hash(id), 16))
+    const n = int(r0, 2, 9)
+    const shown = await codeWith($, rng(parseInt(hash(`${id}:${at[0]}`), 16)), part)
+    const summary = e.props.tool === 'Read' ? `${n + 31} lines` : `${n} matches in ${shown.path.split('/').pop()}`
+    const more = int(r0, 12, 60)
     const { Box, Text, Button, Code } = $.ui.resolve(e)
-    const n = int(r, 2, 9)
-    const summary = e.props.tool === 'Read' ? `${n + 31} lines` : `${n} matches in ${block.path.split('/').pop()}`
-    const toggle = () => void update($, openA, m => ({ ...m, [id]: !m[id] }))
     return (
       <Box flexDirection="column">
         {await next(e)}
-        <Button key={`open-${id}`} plain onPress={toggle}>
+        <Button key={`open-${id}`} plain onPress={() => void update($, openA, m => ({ ...m, [id]: !m[id] }))}>
           <Text dimColor>
             {'  ⎿  '}
             {summary}
             {isOpen ? '' : ' …'}
           </Text>
         </Button>
-        {isOpen && <Code source={block.source} path={block.path} startLine={block.start} wrap="truncate-end" />}
+        {isOpen && <Code source={shown.source} path={shown.path} startLine={shown.start} wrap="truncate-end" />}
+        {isOpen && (
+          <Box flexDirection="row">
+            <Button key={`more-${id}`} plain onPress={() => void turnRow($, id, 1)}>
+              <Text dimColor>{`     … +${more} lines `}</Text>
+            </Button>
+            <Button key={`back-${id}`} plain onPress={() => void turnRow($, id, -1)}>
+              <Text dimColor>(ctrl+o to expand)</Text>
+            </Button>
+          </Box>
+        )}
       </Box>
     )
   })
 
-  // Boss key from the message box: a prompt of just "x" toggles boss mode and
-  // is dropped, so it never reaches the model or the transcript.
+  // Commands typed in the message box, dropped before they are sent:
+  //   x               boss mode on / off
+  //   claudo <file>   read that txt file
+  //   claudo off|on   stop / start drawing under tool rows
   on('prompt.submit', async ($, e, next) => {
-    if (e.command || e.isMeta || e.text.trim().toLowerCase() !== 'x') return next(e)
-    await turn($, 'boss')
-    return { drop: 'Nothing to send.' }
-  }).catch(($, e, next) => next(e))
-
-  on('command.run', { command: 'claudo' }, async $ => {
-    await $.ui.open({ id: PANE, title: TITLE })
-    return { text: 'Pane opened.' }
-  })
-
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button, Input, Code } = $.ui.resolve(e)
-    const path = await read($, pathA)
-    const pos = await read($, posA)
-    const boss = await read($, bossA)
-    await read($, loadedA) // redraw once a load ends
+    if (e.command || e.isMeta) return next(e)
+    const text = e.text.trim()
+    if (text.toLowerCase() === 'x') {
+      await toggleBoss($)
+      return { drop: 'Nothing to send.' }
+    }
+    const m = /^claudo(?:\s+(.+))?$/i.exec(text)
+    if (!m) return next(e)
+    const arg = (m[1] ?? '').trim()
+    if (/^(off|on)$/i.test(arg)) {
+      await setInline($, arg.toLowerCase() === 'on')
+      return { drop: 'Nothing to send.' }
+    }
+    if (!arg) {
+      const path = await read($, pathA)
+      const sents = books.get(path)
+      const pct = sents ? ((await read($, posA)) * 100) / Math.max(1, sents.length) : 0
+      return { drop: path ? `${path.split('/').pop()} · ${pct.toFixed(1)}%` : 'Nothing to send.' }
+    }
+    const path = await openBook($, arg)
     const error = await read($, errorA)
-    const inline = await read($, inlineA)
-
-    // Everything is a mouse target: a line of text turns to the next page, the
-    // "Cogitated" part of the footer to the previous one, the token count toggles
-    // boss mode, the percentage turns forward too. In boss mode a line does nothing.
-    const fwd = () => void (boss ? undefined : turn($, PER_PAGE))
-    const line = (key: string, children: unknown) => (
-      <Button key={key} plain onPress={fwd}>
-        {children as string}
-      </Button>
-    )
-    const footer = (pct: string, secs: number, tokens: string) => (
-      <Box flexDirection="row" marginTop={1}>
-        <Button key="prev" plain onPress={() => void turn($, -PER_PAGE)}>
-          <Text dimColor>✻ Cogitated for {secs}s</Text>
-        </Button>
-        <Text dimColor> · </Text>
-        <Button key="boss" plain onPress={() => void turn($, 'boss')}>
-          <Text dimColor>↓ {tokens} tokens</Text>
-        </Button>
-        <Text dimColor> · </Text>
-        <Button key="next" plain onPress={() => void turn($, PER_PAGE)}>
-          <Text dimColor>{pct}</Text>
-        </Button>
-        <Text dimColor>  </Text>
-        <Button key="inline" plain label={inline ? '⇡' : '⇣'} onPress={() => void turn($, 'inline')} />
-      </Box>
-    )
-
-    if (!path) {
-      return (
-        <Box flexDirection="column">
-          <Text dimColor>Attach a trace source.</Text>
-          <Input key="file" placeholder="~/path/to/session.log" submitLabel="Attach" onSubmit={v => void openBook($, v)} />
-        </Box>
-      )
-    }
-
-    if (error) {
-      return (
-        <Box flexDirection="column">
-          <Text color="red">⏺ Error: {error}</Text>
-          <Button key="reset" plain label="Choose another source" onPress={() => void turn($, 'close')} />
-        </Box>
-      )
-    }
-
-    const sents = books.get(path)
-    if (!sents) {
-      ensureBook($, path)
-      return <Text dimColor>✻ Thinking…</Text>
-    }
-
-    const page = boss
-      ? { blocks: await bossPage($, pos + 99), end: pos, secs: 41, tokens: '3.2k' }
-      : await buildPage($, sents, pos)
-    const pct = `${((page.end * 100) / Math.max(1, sents.length)).toFixed(1)}%`
-
-    return (
-      <Box flexDirection="column">
-        {page.blocks.map((b, k) => {
-          if (b.kind === 'prose')
-            return (
-              <Box key={`p${k}`} flexDirection="column" marginTop={1}>
-                {b.lines.map((l, j) =>
-                  line(
-                    `p${k}-${j}`,
-                    <Text>
-                      {j === 0 ? '⏺ ' : '  '}
-                      {l}
-                    </Text>,
-                  ),
-                )}
-              </Box>
-            )
-          if (b.kind === 'read')
-            return (
-              <Box key={`r${k}`} flexDirection="column" marginTop={1}>
-                {line(
-                  `r${k}`,
-                  <Text>
-                    <Text color="green">⏺ </Text>
-                    <Text bold>Read</Text>({b.path})
-                  </Text>,
-                )}
-                <Code source={b.source} path={b.path} startLine={b.start} wrap="truncate-end" />
-              </Box>
-            )
-          if (b.kind === 'update')
-            return (
-              <Box key={`u${k}`} flexDirection="column" marginTop={1}>
-                {line(
-                  `u${k}`,
-                  <Text>
-                    <Text color="green">⏺ </Text>
-                    <Text bold>Update</Text>({b.path})
-                  </Text>,
-                )}
-                {line(
-                  `u${k}-s`,
-                  <Text dimColor>
-                    {'  ⎿  '}Updated {b.path} with {b.adds} additions and 1 removal
-                  </Text>,
-                )}
-                <Code source={b.diff} path={b.path} format="diff" wrap="truncate-end" />
-              </Box>
-            )
-          return (
-            <Box key={`b${k}`} flexDirection="column" marginTop={1}>
-              {line(
-                `b${k}`,
-                <Text>
-                  <Text color="green">⏺ </Text>
-                  <Text bold>Bash</Text>({b.cmd})
-                </Text>,
-              )}
-              {b.lines.map((l, j) =>
-                line(
-                  `b${k}-${j}`,
-                  <Text dimColor>
-                    {j === 0 ? '  ⎿  ' : '     '}
-                    {l}
-                  </Text>,
-                ),
-              )}
-            </Box>
-          )
-        })}
-        {footer(pct, page.secs, page.tokens)}
-      </Box>
-    )
-  })
+    return { drop: error ? `Error: ${error}` : `${path.split('/').pop()} · ready` }
+  }).catch(($, e, next) => next(e))
 }

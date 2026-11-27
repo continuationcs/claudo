@@ -1,6 +1,6 @@
 {
   "name": "claudo",
   "version": "0.1.0",
-  "description": "A trace pane that reads a local txt file, drawn as session output",
+  "description": "Reads a local txt file as comments in real code under Bash and Read rows",
   "types": "./types/index.d.ts"
 }
